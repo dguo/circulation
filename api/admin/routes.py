@@ -20,13 +20,13 @@ from templates import (
     admin_sign_in_again as sign_in_again_template,
 )
 
-
-if getattr(app, 'manager', None) is not None:
-    setup_admin_controllers(app.manager)
-
 # The secret key is used for signing cookies for admin login
 app.secret_key = Configuration.get(Configuration.SECRET_KEY)
 
+@app.before_first_request
+def setup_admin():
+    if getattr(app, 'manager', None) is not None:
+        setup_admin_controllers(app.manager)
 
 def requires_admin(f):
     @wraps(f)
@@ -100,11 +100,25 @@ def unsuppress(data_source, identifier):
 def refresh(data_source, identifier):
     return app.manager.admin_work_controller.refresh_metadata(data_source, identifier)
 
+@app.route('/admin/works/<data_source>/<identifier>/resolve_complaints', methods=['POST'])
+@returns_problem_detail
+@requires_admin
+@requires_csrf_token
+def resolve_complaints(data_source, identifier):
+    return app.manager.admin_work_controller.resolve_complaints(data_source, identifier)
+
 @app.route('/admin/complaints')
 @returns_problem_detail
 @requires_admin
 def complaints():
     return app.manager.admin_feed_controller.complaints()
+
+@app.route('/admin/suppressed')
+@returns_problem_detail
+@requires_admin
+def suppressed():
+    """Returns a feed of suppressed works."""
+    return app.manager.admin_feed_controller.suppressed()
 
 @app.route('/admin/sign_in_again')
 def admin_sign_in_again():

@@ -14,6 +14,7 @@ uwsgi
 loggly-python-handler
 mock
 cairosvg
+py-bcrypt
 
 # In circ, feedparser is only used in tests.
 feedparser
@@ -24,7 +25,6 @@ feedparser
 textblob
 
 # Used only by circulation
-numpy
 oauth2client
 
 # A NYPL-specific requirement

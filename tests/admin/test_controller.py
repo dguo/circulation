@@ -76,12 +76,33 @@ class TestWorkController(AdminControllerTest):
     def test_edit(self):
         [lp] = self.english_1.license_pools
         with self.app.test_request_context("/"):
-            flask.request.form = ImmutableMultiDict([("title", "New title")])
+            flask.request.form = ImmutableMultiDict([
+                ("title", "New title"),
+                ("audience", "Adults Only"),
+                ("summary", "<p>New summary</p>")
+            ])
             response = self.manager.admin_work_controller.edit(lp.data_source.name, lp.identifier.identifier)
 
             eq_(200, response.status_code)
             eq_("New title", self.english_1.title)
             assert "New title" in self.english_1.simple_opds_entry
+            eq_("Adults Only", self.english_1.audience)
+            assert 'Adults Only' in self.english_1.simple_opds_entry
+            eq_("<p>New summary</p>", self.english_1.summary_text)
+            assert "&lt;p&gt;New summary&lt;/p&gt;" in self.english_1.simple_opds_entry
+
+        with self.app.test_request_context("/"):
+            # Change the audience again
+            flask.request.form = ImmutableMultiDict([
+                ("title", "New title"),
+                ("audience", "Young Adult"),
+                ("summary", "<p>New summary</p>")
+            ])
+            response = self.manager.admin_work_controller.edit(lp.data_source.name, lp.identifier.identifier)
+            eq_("Young Adult", self.english_1.audience)
+            assert 'Young Adult' in self.english_1.simple_opds_entry
+            assert 'Adults Only' not in self.english_1.simple_opds_entry
+
 
     def test_suppress(self):
         [lp] = self.english_1.license_pools
@@ -159,7 +180,53 @@ class TestWorkController(AdminControllerTest):
             eq_(response['book']['identifier'], lp.identifier.identifier)
             eq_(response['complaints'][type1], 2)
             eq_(response['complaints'][type2], 1)
+
+    def test_resolve_complaints(self):
+        type = iter(Complaint.VALID_TYPES)
+        type1 = next(type)
+        type2 = next(type)
+
+        work = self._work(
+            "fiction work with complaint",
+            language="eng",
+            fiction=True,
+            with_open_access_download=True)
+        complaint1 = self._complaint(
+            work.license_pools[0],
+            type1,
+            "complaint1 source",
+            "complaint1 detail")
+        complaint2 = self._complaint(
+            work.license_pools[0],
+            type1,
+            "complaint2 source",
+            "complaint2 detail")
         
+        SessionManager.refresh_materialized_views(self._db)
+        [lp] = work.license_pools
+
+        # first attempt to resolve complaints of the wrong type
+        with self.app.test_request_context("/"):
+            flask.request.form = ImmutableMultiDict([("type", type2)])
+            response = self.manager.admin_work_controller.resolve_complaints(lp.data_source.name, lp.identifier.identifier)
+            unresolved_complaints = [complaint for complaint in lp.complaints if complaint.resolved == None]
+            eq_(response.status_code, 404)
+            eq_(len(unresolved_complaints), 2)
+
+        # then attempt to resolve complaints of the correct type
+        with self.app.test_request_context("/"):
+            flask.request.form = ImmutableMultiDict([("type", type1)])
+            response = self.manager.admin_work_controller.resolve_complaints(lp.data_source.name, lp.identifier.identifier)
+            unresolved_complaints = [complaint for complaint in lp.complaints if complaint.resolved == None]
+            eq_(response.status_code, 200)
+            eq_(len(unresolved_complaints), 0)
+
+        # then attempt to resolve the already-resolved complaints of the correct type
+        with self.app.test_request_context("/"):
+            flask.request.form = ImmutableMultiDict([("type", type1)])
+            response = self.manager.admin_work_controller.resolve_complaints(lp.data_source.name, lp.identifier.identifier)
+            eq_(response.status_code, 409)
+
 
 class TestSignInController(AdminControllerTest):
 
@@ -182,15 +249,11 @@ class TestSignInController(AdminControllerTest):
             eq_(self.admin, response)
 
         # Returns an error if you aren't authenticated.
-        with temp_config() as config:
-            config[Configuration.GOOGLE_OAUTH_INTEGRATION] = {
-                Configuration.GOOGLE_OAUTH_CLIENT_JSON : "/path"
-            }
-            with self.app.test_request_context('/admin'):
-                # You get back a problem detail when you're not authenticated.
-                response = self.manager.admin_sign_in_controller.authenticated_admin_from_request()
-                eq_(401, response.status_code)
-                eq_(INVALID_ADMIN_CREDENTIALS.detail, response.detail)
+        with self.app.test_request_context('/admin'):
+            # You get back a problem detail when you're not authenticated.
+            response = self.manager.admin_sign_in_controller.authenticated_admin_from_request()
+            eq_(401, response.status_code)
+            eq_(INVALID_ADMIN_CREDENTIALS.detail, response.detail)
 
     def test_authenticated_admin(self):
         # Creates a new admin with fresh details.
@@ -274,3 +337,17 @@ class TestFeedController(AdminControllerTest):
             entries = feed['entries']
 
             eq_(len(entries), 2)
+
+    def test_suppressed(self):
+        suppressed_work = self._work(with_open_access_download=True)
+        suppressed_work.license_pools[0].suppressed = True
+
+        unsuppressed_work = self._work()
+
+        SessionManager.refresh_materialized_views(self._db)
+        with self.app.test_request_context("/"):
+            response = self.manager.admin_feed_controller.suppressed()
+            feed = feedparser.parse(response.data)
+            entries = feed['entries']
+            eq_(1, len(entries))
+            eq_(suppressed_work.title, entries[0]['title'])
